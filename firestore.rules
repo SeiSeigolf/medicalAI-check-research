@@ -1,0 +1,98 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(participantId) {
+      return signedIn() && request.auth.uid == participantId;
+    }
+
+    function isAdmin() {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/admin_users/$(request.auth.uid));
+    }
+
+    match /participants/{participantId} {
+      allow read: if isSelf(participantId) || isAdmin();
+      allow create: if isSelf(participantId);
+      allow update, delete: if false;
+    }
+
+    match /sessions/{sessionId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.participantId == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
+    match /case_assignments/{assignmentId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.participantId == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
+    match /case_answers/{answerId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.participantId == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
+    match /selected_error_answers/{selectedErrorId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.participantId == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
+    match /ui_events/{eventId} {
+      allow create: if signedIn() && request.resource.data.participantId == request.auth.uid;
+      allow read: if isAdmin();
+      allow update, delete: if false;
+    }
+
+    match /questionnaires/{questionnaireId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.participantId == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
+    match /cases/{caseId} {
+      allow read: if signedIn() || isAdmin();
+      allow write: if isAdmin();
+    }
+
+    match /ai_outputs/{aiOutputId} {
+      allow read: if signedIn() || isAdmin();
+      allow write: if isAdmin();
+    }
+
+    match /claims/{claimId} {
+      allow read: if signedIn() || isAdmin();
+      allow write: if isAdmin();
+    }
+
+    match /audit_annotations/{annotationId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    match /ground_truth_errors/{errorId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    match /safety_checklists/{checklistId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    match /experiments/{experimentId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /admin_users/{userId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /exports/{exportId} {
+      allow read, write: if isAdmin();
+    }
+  }
+}

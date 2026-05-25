@@ -1,11 +1,64 @@
+# MedAudit UI
 
-  # テキストに基づく作成
+医療LLM出力を、人間が安全かつ過度な負担なく監査できるかを評価する研究用Webシステムです。
 
-  This is a code bundle for テキストに基づく作成. The original project is available at https://www.figma.com/design/6C9eWnZ9rFZtYxPZjhMPPA/%E3%83%86%E3%82%AD%E3%82%B9%E3%83%88%E3%81%AB%E5%9F%BA%E3%81%A5%E3%81%8F%E4%BD%9C%E6%88%90.
+## Frontend
 
-  ## Running the code
+Vite / React / TypeScript で実装しています。
 
-  Run `npm i` to install the dependencies.
+```bash
+npm install
+npm run dev
+```
 
-  Run `npm run dev` to start the development server.
-  
+Production build:
+
+```bash
+npm run build
+```
+
+## Backend
+
+Firebase Auth / Firestore / Cloud Functions v2 のバックエンドを `functions/` に実装しています。
+
+詳細は [BACKEND.md](./BACKEND.md) を参照してください。
+
+実装済みの主なAPI:
+
+- `createParticipant`
+- `assignExperimentSession`
+- `getCaseForReview`
+- `getNextAssignment`
+- `submitCaseAnswer`
+- `logUIEvents`
+- `submitQuestionnaire`
+- `adminGetParticipants`
+- `exportStudyData`
+- `seedDemoData`
+
+## Research Data Model
+
+Firestoreの主なコレクション:
+
+- `participants`
+- `sessions`
+- `case_assignments`
+- `case_answers`
+- `selected_error_answers`
+- `ui_events`
+- `questionnaires`
+- `cases`
+- `ai_outputs`
+- `claims`
+- `audit_annotations`
+- `ground_truth_errors`
+- `safety_checklists`
+- `experiments`
+
+## Current Deployment
+
+Vercel frontend:
+
+https://medaudit-ui.vercel.app
+
+Firebase backend is implemented in the repository, but deployment requires a Firebase project ID and Firebase CLI login.
