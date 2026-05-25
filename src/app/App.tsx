@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   AlertTriangle,
   BarChart3,
@@ -62,6 +62,17 @@ interface MedCase {
   notes: Array<{ role: string; text: string }>;
   claims: Claim[];
   checklist: string[];
+  groundTruthErrors: GroundTruthError[];
+}
+
+interface GroundTruthError {
+  errorId: string;
+  claimId: string;
+  errorType: Exclude<ErrorType, "no_problem" | "other">;
+  severity: 1 | 2 | 3 | 4 | 5;
+  explanation: string;
+  expectedCorrection: string;
+  consensusStatus: "draft" | "reviewed" | "consensus";
 }
 
 interface ClaimAnswer {
@@ -73,18 +84,38 @@ interface ClaimAnswer {
 }
 
 interface CaseAnswer {
+  answerId: string;
+  assignmentId: string;
+  participantId: string;
+  sessionId: string;
   caseId: string;
   condition: Condition;
   claimAnswers: Record<string, ClaimAnswer>;
+  selectedErrors: SelectedErrorAnswer[];
+  isTutorial: boolean;
+  startedAt: string;
   finalUseDecision: number;
   trustScore: number;
   confidenceScore: number;
   needsAdditionalCheck: boolean;
   perceivedDifficulty: number;
   workloadScore: number;
+  checklistCheckedItems: string[];
   comment: string;
   submittedAt: string;
+  durationMs: number;
 }
+
+type FinalCaseInput = Pick<
+  CaseAnswer,
+  | "finalUseDecision"
+  | "trustScore"
+  | "confidenceScore"
+  | "needsAdditionalCheck"
+  | "perceivedDifficulty"
+  | "workloadScore"
+  | "comment"
+>;
 
 interface Participant {
   role: string;
@@ -95,7 +126,75 @@ interface Participant {
   selfRatedMedicalKnowledge: string;
 }
 
+interface Session {
+  sessionId: string;
+  participantId: string;
+  status: "created" | "in_progress" | "completed" | "withdrawn";
+  experimentVersion: string;
+  assignedConditionPattern: string;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+interface Assignment {
+  assignmentId: string;
+  sessionId: string;
+  participantId: string;
+  caseId: string;
+  condition: Condition;
+  order: number;
+  status: "not_started" | "in_progress" | "submitted";
+  isTutorial: boolean;
+  startedAt?: string;
+  submittedAt?: string;
+}
+
+interface SelectedErrorAnswer {
+  selectedErrorId: string;
+  answerId: string;
+  participantId: string;
+  sessionId: string;
+  caseId: string;
+  claimId: string;
+  condition: Condition;
+  isTutorial: boolean;
+  selectedErrorType: ErrorType;
+  selectedSeverity?: number;
+  reasonText?: string;
+  correctionText?: string;
+  confidenceInSelection?: number;
+  isTruePositive: boolean;
+  matchedGroundTruthErrorId?: string;
+}
+
+interface UIEvent {
+  eventId: string;
+  participantId: string;
+  sessionId: string;
+  assignmentId?: string;
+  caseId?: string;
+  condition?: Condition;
+  isTutorial?: boolean;
+  eventType:
+    | "page_view"
+    | "claim_click"
+    | "error_type_select"
+    | "severity_select"
+    | "evidence_drawer_open"
+    | "checklist_check"
+    | "checklist_uncheck"
+    | "final_form_start"
+    | "answer_submit";
+  targetType?: "claim" | "evidence" | "checklist" | "button" | "page";
+  targetId?: string;
+  timestamp: string;
+  elapsedMs?: number;
+  payload?: Record<string, unknown>;
+}
+
 const CONDITIONS: Condition[] = ["control", "evidence", "audit"];
+const EXPERIMENT_VERSION = "v0.2-literature-demo";
 
 const CONDITION_LABEL: Record<Condition, string> = {
   control: "Control UI",
@@ -182,6 +281,35 @@ const CASES: MedCase[] = [
       },
     ],
     checklist: ["腎機能に応じた薬剤選択を確認", "NSAIDsの禁忌・慎重投与を確認", "red flag症状を確認"],
+    groundTruthErrors: [
+      {
+        errorId: "gte-ckd-1",
+        claimId: "ckd-c1",
+        errorType: "unsafe_recommendation",
+        severity: 4,
+        explanation: "CKD stage 3bでNSAIDsを通常量使用可とするのは腎機能悪化リスクが高い。",
+        expectedCorrection: "アセトアミノフェン等を含め、腎機能と禁忌を確認して医療者へ相談する。",
+        consensusStatus: "consensus",
+      },
+      {
+        errorId: "gte-ckd-2",
+        claimId: "ckd-c2",
+        errorType: "contradicted",
+        severity: 4,
+        explanation: "腎機能への影響が心配ないという記述は症例情報と矛盾する。",
+        expectedCorrection: "腎機能低下があるためNSAIDsを避ける/慎重に判断する。",
+        consensusStatus: "consensus",
+      },
+      {
+        errorId: "gte-ckd-3",
+        claimId: "ckd-c3",
+        errorType: "unsupported",
+        severity: 3,
+        explanation: "水分制限を勧める根拠がなく、脱水を悪化させる可能性がある。",
+        expectedCorrection: "脱水やred flagを確認し、必要時は医療者へ相談する。",
+        consensusStatus: "reviewed",
+      },
+    ],
   },
   {
     id: "fall-anticoagulant",
@@ -247,6 +375,26 @@ const CASES: MedCase[] = [
       },
     ],
     checklist: ["抗凝固薬の有無を確認", "頭部外傷のred flagを確認", "受診・画像評価の必要性を確認"],
+    groundTruthErrors: [
+      {
+        errorId: "gte-fall-1",
+        claimId: "fall-c1",
+        errorType: "unsafe_recommendation",
+        severity: 5,
+        explanation: "抗凝固薬内服中の頭部打撲を自宅経過観察としている。",
+        expectedCorrection: "救急受診や頭部画像評価の必要性を検討する。",
+        consensusStatus: "consensus",
+      },
+      {
+        errorId: "gte-fall-2",
+        claimId: "fall-c2",
+        errorType: "contradicted",
+        severity: 5,
+        explanation: "抗凝固薬内服中でも頭蓋内出血の心配がほぼないという記述は不適切。",
+        expectedCorrection: "抗凝固薬内服中の頭部外傷では出血リスクを高く見積もる。",
+        consensusStatus: "consensus",
+      },
+    ],
   },
   {
     id: "heart-failure",
@@ -314,6 +462,35 @@ const CASES: MedCase[] = [
       },
     ],
     checklist: ["心不全増悪サインを確認", "SpO2低下と呼吸数を確認", "早期連絡先・受診手段を確認"],
+    groundTruthErrors: [
+      {
+        errorId: "gte-hf-1",
+        claimId: "hf-c1",
+        errorType: "unsafe_recommendation",
+        severity: 4,
+        explanation: "心不全増悪を示唆する体重増加と浮腫を次回訪問まで様子見としている。",
+        expectedCorrection: "早期に主治医・訪問看護へ連絡し、受診や利尿薬調整の要否を確認する。",
+        consensusStatus: "consensus",
+      },
+      {
+        errorId: "gte-hf-2",
+        claimId: "hf-c2",
+        errorType: "unsupported",
+        severity: 4,
+        explanation: "息切れを安静で改善することが多いとする根拠がなく、心不全増悪を見逃す。",
+        expectedCorrection: "呼吸状態と心不全増悪サインを評価し、早期対応を検討する。",
+        consensusStatus: "reviewed",
+      },
+      {
+        errorId: "gte-hf-3",
+        claimId: "hf-c4",
+        errorType: "contradicted",
+        severity: 4,
+        explanation: "症状を伴うSpO2 92%を緊急性なしと断定している。",
+        expectedCorrection: "普段のSpO2、呼吸苦、RR、受診基準を確認する。",
+        consensusStatus: "consensus",
+      },
+    ],
   },
 ];
 
@@ -342,14 +519,49 @@ const labelText: Record<ClaimLabel, string> = {
   unsafe: "危険",
 };
 
+function uid(prefix: string) {
+  return `${prefix}-${Math.random().toString(36).slice(2, 8)}-${Date.now().toString(36)}`;
+}
+
+function createAssignments(participantId: string, sessionId: string): Assignment[] {
+  const pattern: Condition[] = ["control", "evidence", "audit"];
+  return CASES.map((medCase, index) => ({
+    assignmentId: uid("assignment"),
+    sessionId,
+    participantId,
+    caseId: medCase.id,
+    condition: pattern[index % pattern.length],
+    order: index + 1,
+    status: "not_started",
+    isTutorial: false,
+  }));
+}
+
+function createSession(participantId: string): Session {
+  return {
+    sessionId: uid("session"),
+    participantId,
+    status: "created",
+    experimentVersion: EXPERIMENT_VERSION,
+    assignedConditionPattern: "control-evidence-audit",
+    createdAt: new Date().toISOString(),
+  };
+}
+
 export default function App() {
   const [screen, setScreen] = useState<Screen>("landing");
   const [consented, setConsented] = useState(false);
+  const [participantId, setParticipantId] = useState(() => uid("participant"));
+  const [session, setSession] = useState<Session>(() => createSession(participantId));
+  const [assignments, setAssignments] = useState<Assignment[]>(() => createAssignments(participantId, session.sessionId));
   const [participant, setParticipant] = useState<Participant>(emptyParticipant);
   const [profileError, setProfileError] = useState("");
   const [caseIndex, setCaseIndex] = useState(0);
   const [selectedClaimId, setSelectedClaimId] = useState<string>(CASES[0].claims[0].id);
   const [claimDrafts, setClaimDrafts] = useState<Record<string, ClaimAnswer>>({});
+  const [caseStartedAt, setCaseStartedAt] = useState(() => new Date().toISOString());
+  const [checklistCheckedItems, setChecklistCheckedItems] = useState<string[]>([]);
+  const [uiEvents, setUiEvents] = useState<UIEvent[]>([]);
   const [answers, setAnswers] = useState<CaseAnswer[]>([]);
   const [questionnaire, setQuestionnaire] = useState({
     usability: 3,
@@ -361,14 +573,45 @@ export default function App() {
     comment: "",
   });
 
-  const currentCase = CASES[caseIndex];
-  const currentCondition = CONDITIONS[caseIndex % CONDITIONS.length];
+  const currentAssignment = assignments[caseIndex];
+  const currentCase = CASES.find((medCase) => medCase.id === currentAssignment?.caseId) ?? CASES[0];
+  const currentCondition = currentAssignment?.condition ?? "control";
   const selectedClaim = currentCase.claims.find((claim) => claim.id === selectedClaimId) ?? currentCase.claims[0];
 
-  const uiEventCount = useMemo(() => {
-    const claimEvents = Object.keys(claimDrafts).length;
-    return claimEvents + answers.length * 4;
-  }, [answers.length, claimDrafts]);
+  const selectedErrorAnswers = useMemo(() => answers.flatMap((answer) => answer.selectedErrors), [answers]);
+
+  useEffect(() => {
+    if (screen !== "experiment") return;
+    logEvent("page_view", {
+      assignmentId: currentAssignment.assignmentId,
+      caseId: currentCase.id,
+      condition: currentCondition,
+      targetType: "page",
+    });
+    setAssignments((current) =>
+      current.map((item, index) =>
+        index === caseIndex && item.status === "not_started"
+          ? { ...item, status: "in_progress", startedAt: new Date().toISOString() }
+          : item,
+      ),
+    );
+    setCaseStartedAt(new Date().toISOString());
+    setChecklistCheckedItems([]);
+  }, [screen, caseIndex]);
+
+  function logEvent(eventType: UIEvent["eventType"], data: Partial<UIEvent> = {}) {
+    setUiEvents((current) => [
+      ...current,
+      {
+        eventId: uid("event"),
+        participantId,
+        sessionId: session.sessionId,
+        timestamp: new Date().toISOString(),
+        eventType,
+        ...data,
+      },
+    ]);
+  }
 
   function updateParticipant(key: keyof Participant, value: string) {
     setParticipant((current) => ({ ...current, [key]: value }));
@@ -380,25 +623,79 @@ export default function App() {
       return;
     }
     setProfileError("");
+    setSession((current) => ({ ...current, status: "created" }));
     setScreen("tutorial");
   }
 
   function saveClaimAnswer(claimId: string, answer: ClaimAnswer) {
     setClaimDrafts((current) => ({ ...current, [claimId]: answer }));
+    logEvent("error_type_select", {
+      assignmentId: currentAssignment.assignmentId,
+      caseId: currentCase.id,
+      condition: currentCondition,
+      targetType: "claim",
+      targetId: claimId,
+      payload: { errorType: answer.errorType, severity: answer.severity },
+    });
   }
 
-  function submitCase(finalForm: Omit<CaseAnswer, "caseId" | "condition" | "claimAnswers" | "submittedAt">) {
+  function submitCase(finalForm: FinalCaseInput) {
+    const answerId = uid("answer");
+    const submittedAt = new Date().toISOString();
+    const selectedErrors = Object.entries(claimDrafts).map(([claimId, answer]) => {
+      const matched = currentCase.groundTruthErrors.find((truth) => truth.claimId === claimId);
+      const isTruePositive = Boolean(matched && answer.errorType !== "no_problem");
+      return {
+        selectedErrorId: uid("selected-error"),
+        answerId,
+        participantId,
+        sessionId: session.sessionId,
+        caseId: currentCase.id,
+        claimId,
+        condition: currentCondition,
+        isTutorial: false,
+        selectedErrorType: answer.errorType,
+        selectedSeverity: answer.severity,
+        reasonText: answer.reason,
+        correctionText: answer.correction,
+        confidenceInSelection: answer.confidence,
+        isTruePositive,
+        matchedGroundTruthErrorId: matched?.errorId,
+      };
+    });
     const submitted: CaseAnswer = {
       ...finalForm,
+      answerId,
+      assignmentId: currentAssignment.assignmentId,
+      participantId,
+      sessionId: session.sessionId,
       caseId: currentCase.id,
       condition: currentCondition,
       claimAnswers: claimDrafts,
-      submittedAt: new Date().toISOString(),
+      selectedErrors,
+      isTutorial: false,
+      startedAt: caseStartedAt,
+      checklistCheckedItems,
+      submittedAt,
+      durationMs: new Date(submittedAt).getTime() - new Date(caseStartedAt).getTime(),
     };
     setAnswers((current) => [...current, submitted]);
+    setAssignments((current) =>
+      current.map((item, index) =>
+        index === caseIndex ? { ...item, status: "submitted", submittedAt } : item,
+      ),
+    );
+    logEvent("answer_submit", {
+      assignmentId: currentAssignment.assignmentId,
+      caseId: currentCase.id,
+      condition: currentCondition,
+      targetType: "button",
+      targetId: "submit-case-answer",
+    });
     setClaimDrafts({});
     const nextIndex = caseIndex + 1;
     if (nextIndex >= CASES.length) {
+      setSession((current) => ({ ...current, status: "completed", completedAt: new Date().toISOString() }));
       setScreen("questionnaire");
       return;
     }
@@ -407,12 +704,19 @@ export default function App() {
   }
 
   function resetDemo() {
+    const nextParticipantId = uid("participant");
+    const nextSession = createSession(nextParticipantId);
     setScreen("landing");
     setConsented(false);
+    setParticipantId(nextParticipantId);
+    setSession(nextSession);
+    setAssignments(createAssignments(nextParticipantId, nextSession.sessionId));
     setParticipant(emptyParticipant);
     setCaseIndex(0);
     setSelectedClaimId(CASES[0].claims[0].id);
     setClaimDrafts({});
+    setUiEvents([]);
+    setChecklistCheckedItems([]);
     setAnswers([]);
   }
 
@@ -439,12 +743,26 @@ export default function App() {
           casePositionLabel="チュートリアル"
           selectedClaim={selectedClaim}
           selectedClaimId={selectedClaimId}
-          setSelectedClaimId={setSelectedClaimId}
+          setSelectedClaimId={(claimId) => {
+            setSelectedClaimId(claimId);
+            logEvent("claim_click", {
+              assignmentId: "tutorial-assignment",
+              caseId: CASES[0].id,
+              condition: "audit",
+              isTutorial: true,
+              targetType: "claim",
+              targetId: claimId,
+            });
+          }}
           claimDrafts={claimDrafts}
           saveClaimAnswer={saveClaimAnswer}
+          checklistCheckedItems={checklistCheckedItems}
+          setChecklistCheckedItems={setChecklistCheckedItems}
+          logEvent={logEvent}
           onSubmitCase={() => {
             setClaimDrafts({});
             setSelectedClaimId(CASES[0].claims[0].id);
+            setSession((current) => ({ ...current, status: "in_progress", startedAt: new Date().toISOString() }));
             setScreen("experiment");
           }}
         />
@@ -457,9 +775,21 @@ export default function App() {
           casePositionLabel={`症例 ${caseIndex + 1} / ${CASES.length}`}
           selectedClaim={selectedClaim}
           selectedClaimId={selectedClaimId}
-          setSelectedClaimId={setSelectedClaimId}
+          setSelectedClaimId={(claimId) => {
+            setSelectedClaimId(claimId);
+            logEvent("claim_click", {
+              assignmentId: currentAssignment.assignmentId,
+              caseId: currentCase.id,
+              condition: currentCondition,
+              targetType: "claim",
+              targetId: claimId,
+            });
+          }}
           claimDrafts={claimDrafts}
           saveClaimAnswer={saveClaimAnswer}
+          checklistCheckedItems={checklistCheckedItems}
+          setChecklistCheckedItems={setChecklistCheckedItems}
+          logEvent={logEvent}
           onSubmitCase={submitCase}
         />
       ) : null}
@@ -474,9 +804,13 @@ export default function App() {
       {screen === "admin" ? (
         <Admin
           participant={participant}
+          participantId={participantId}
+          session={session}
+          assignments={assignments}
           answers={answers}
+          selectedErrorAnswers={selectedErrorAnswers}
+          uiEvents={uiEvents}
           cases={CASES}
-          uiEventCount={uiEventCount}
           onReset={resetDemo}
         />
       ) : null}
@@ -641,6 +975,9 @@ function ReviewShell({
   setSelectedClaimId,
   claimDrafts,
   saveClaimAnswer,
+  checklistCheckedItems,
+  setChecklistCheckedItems,
+  logEvent,
   onSubmitCase,
 }: {
   mode: "tutorial" | "experiment";
@@ -652,7 +989,10 @@ function ReviewShell({
   setSelectedClaimId: (id: string) => void;
   claimDrafts: Record<string, ClaimAnswer>;
   saveClaimAnswer: (claimId: string, answer: ClaimAnswer) => void;
-  onSubmitCase: (answer: Omit<CaseAnswer, "caseId" | "condition" | "claimAnswers" | "submittedAt">) => void;
+  checklistCheckedItems: string[];
+  setChecklistCheckedItems: (items: string[]) => void;
+  logEvent: (eventType: UIEvent["eventType"], data?: Partial<UIEvent>) => void;
+  onSubmitCase: (answer: FinalCaseInput) => void;
 }) {
   return (
     <main className="h-screen overflow-hidden bg-slate-100">
@@ -694,7 +1034,10 @@ function ReviewShell({
           condition={condition}
           selectedClaim={selectedClaim}
           draft={claimDrafts[selectedClaim.id]}
+          checklistCheckedItems={checklistCheckedItems}
+          setChecklistCheckedItems={setChecklistCheckedItems}
           saveClaimAnswer={saveClaimAnswer}
+          logEvent={logEvent}
           onSubmitCase={onSubmitCase}
         />
       </div>
@@ -812,7 +1155,10 @@ function AuditPanel({
   condition,
   selectedClaim,
   draft,
+  checklistCheckedItems,
+  setChecklistCheckedItems,
   saveClaimAnswer,
+  logEvent,
   onSubmitCase,
 }: {
   mode: "tutorial" | "experiment";
@@ -820,8 +1166,11 @@ function AuditPanel({
   condition: Condition;
   selectedClaim: Claim;
   draft?: ClaimAnswer;
+  checklistCheckedItems: string[];
+  setChecklistCheckedItems: (items: string[]) => void;
   saveClaimAnswer: (claimId: string, answer: ClaimAnswer) => void;
-  onSubmitCase: (answer: Omit<CaseAnswer, "caseId" | "condition" | "claimAnswers" | "submittedAt">) => void;
+  logEvent: (eventType: UIEvent["eventType"], data?: Partial<UIEvent>) => void;
+  onSubmitCase: (answer: FinalCaseInput) => void;
 }) {
   const [errorType, setErrorType] = useState<ErrorType>(draft?.errorType ?? "no_problem");
   const [severity, setSeverity] = useState(draft?.severity ?? 3);
@@ -884,7 +1233,21 @@ function AuditPanel({
           <div className="space-y-2">
             {medCase.checklist.map((item) => (
               <label className="flex items-center gap-2 text-sm" key={item}>
-                <input type="checkbox" className="h-4 w-4" />
+                <input
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={checklistCheckedItems.includes(item)}
+                  onChange={(event) => {
+                    const next = event.target.checked
+                      ? [...checklistCheckedItems, item]
+                      : checklistCheckedItems.filter((checked) => checked !== item);
+                    setChecklistCheckedItems(next);
+                    logEvent(event.target.checked ? "checklist_check" : "checklist_uncheck", {
+                      targetType: "checklist",
+                      targetId: item,
+                    });
+                  }}
+                />
                 {item}
               </label>
             ))}
@@ -986,15 +1349,23 @@ function Complete({ onAdmin }: { onAdmin: () => void }) {
 
 function Admin({
   participant,
+  participantId,
+  session,
+  assignments,
   answers,
+  selectedErrorAnswers,
+  uiEvents,
   cases,
-  uiEventCount,
   onReset,
 }: {
   participant: Participant;
+  participantId: string;
+  session: Session;
+  assignments: Assignment[];
   answers: CaseAnswer[];
+  selectedErrorAnswers: SelectedErrorAnswer[];
+  uiEvents: UIEvent[];
   cases: MedCase[];
-  uiEventCount: number;
   onReset: () => void;
 }) {
   return (
@@ -1011,20 +1382,65 @@ function Admin({
       <div className="grid gap-4 md:grid-cols-4">
         <Metric icon={<Users size={20} />} label="参加者" value={participant.role ? "1" : "0"} />
         <Metric icon={<ClipboardCheck size={20} />} label="回答済み症例" value={`${answers.length} / ${cases.length}`} />
-        <Metric icon={<BarChart3 size={20} />} label="UIイベント" value={String(uiEventCount)} />
-        <Metric icon={<ShieldCheck size={20} />} label="実験条件" value="3条件" />
+        <Metric icon={<BarChart3 size={20} />} label="UIイベント" value={String(uiEvents.length)} />
+        <Metric icon={<ShieldCheck size={20} />} label="セッション状態" value={session.status} />
       </div>
+      <section className="mt-6 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="text-lg font-semibold">研究データ構造</h2>
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
+          <DataBadge label="participantId" value={participantId} />
+          <DataBadge label="sessionId" value={session.sessionId} />
+          <DataBadge label="experimentVersion" value={session.experimentVersion} />
+        </div>
+        <div className="mt-4 rounded-md border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
+          このMVPではFirestoreの代わりにブラウザ内状態へ保存していますが、要件定義上の
+          participants / sessions / case_assignments / case_answers / selected_error_answers / ui_events に対応する形で出力できます。
+        </div>
+      </section>
+      <section className="mt-6 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="text-lg font-semibold">症例×UI条件 割付</h2>
+        <div className="mt-4 overflow-auto">
+          <table className="w-full min-w-[760px] border-collapse text-sm">
+            <thead className="bg-slate-50 text-left">
+              <tr>
+                <th className="border-b p-3">order</th>
+                <th className="border-b p-3">assignmentId</th>
+                <th className="border-b p-3">caseId</th>
+                <th className="border-b p-3">condition</th>
+                <th className="border-b p-3">status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {assignments.map((assignment) => (
+                <tr key={assignment.assignmentId}>
+                  <td className="border-b p-3">{assignment.order}</td>
+                  <td className="border-b p-3">{assignment.assignmentId}</td>
+                  <td className="border-b p-3">{assignment.caseId}</td>
+                  <td className="border-b p-3">{CONDITION_LABEL[assignment.condition]}</td>
+                  <td className="border-b p-3">{assignment.status}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
       <section className="mt-6 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold">回答一覧</h2>
-          <div className="flex gap-2">
-            <button className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold hover:bg-slate-100" onClick={() => download("case_answers.json", JSON.stringify(answers, null, 2))}>
+          <div className="flex flex-wrap gap-2">
+            <button className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold hover:bg-slate-100" onClick={() => download("study_export.json", JSON.stringify({ participant, participantId, session, assignments, answers, selectedErrorAnswers, uiEvents, cases }, null, 2))}>
               <Download className="mr-2 inline" size={16} />
-              JSON
+              全体JSON
             </button>
-            <button className="rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => download("case_answers.csv", toCsv(answers))}>
+            <button className="rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => download("case_answers.csv", toCsv(answers, ["answerId", "assignmentId", "participantId", "sessionId", "caseId", "condition", "finalUseDecision", "trustScore", "confidenceScore", "needsAdditionalCheck", "perceivedDifficulty", "workloadScore", "durationMs", "submittedAt"]))}>
               <Download className="mr-2 inline" size={16} />
-              CSV
+              case_answers.csv
+            </button>
+            <button className="rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => download("selected_error_answers.csv", toCsv(selectedErrorAnswers, ["selectedErrorId", "answerId", "claimId", "selectedErrorType", "selectedSeverity", "isTruePositive", "matchedGroundTruthErrorId"]))}>
+              selected_error_answers.csv
+            </button>
+            <button className="rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white" onClick={() => download("ui_events.csv", toCsv(uiEvents, ["eventId", "participantId", "sessionId", "assignmentId", "eventType", "targetType", "targetId", "timestamp"]))}>
+              ui_events.csv
             </button>
           </div>
         </div>
@@ -1073,6 +1489,15 @@ function Metric({ icon, label, value }: { icon: ReactNode; label: string; value:
     <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex items-center gap-2 text-slate-500">{icon}<span className="text-sm">{label}</span></div>
       <div className="mt-3 text-2xl font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function DataBadge({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+      <div className="text-xs font-semibold text-slate-500">{label}</div>
+      <div className="mt-1 break-all text-sm font-medium">{value}</div>
     </div>
   );
 }
@@ -1202,8 +1627,7 @@ function download(filename: string, content: string) {
   URL.revokeObjectURL(url);
 }
 
-function toCsv(rows: CaseAnswer[]) {
-  const header = ["caseId", "condition", "finalUseDecision", "trustScore", "confidenceScore", "needsAdditionalCheck", "perceivedDifficulty", "workloadScore", "submittedAt"];
+function toCsv<T extends object>(rows: T[], header: string[]) {
   const body = rows.map((row) => header.map((key) => JSON.stringify((row as any)[key] ?? "")).join(","));
   return `\ufeff${header.join(",")}\n${body.join("\n")}`;
 }
